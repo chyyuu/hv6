@@ -1,0 +1,24 @@
+make hv6-verfiy failure
+
+测试环境安装
+	- Linux Ubuntu 17.10
+	- Binutils 2.29.1
+	- GCC 7.2.0
+	- QEMU 2.10.1
+	- LLVM 5.0.0
+	- Z3 4.5.0
+	- Python 2.7.10
+	- Cmake 3.9.1
+
+说明：其中LLVM是通过源代码编译后进行安装的，一起安装的还有clang，complier-rt，libxx，libxxabi；hv6可以使用qemu运行
+
+出现的问题：
+mkdir -p o.x86_64/hv6
+./irpy/compiler/irpy "o.x86_64/hv6/hv6.ll" > "o.x86_64/hv6/hv6.py"
+Parsing took 278.442 ms.
+irpy: /home/zhangqiang/Downloads/llvm-5.0.0.src/include/llvm/Support/Casting.h:255: typename llvm::cast_retty<X, Y*>::ret_type llvm::cast(Y*) [with X = llvm::OverflowingBinaryOperator; Y = const llvm::Instruction; typename llvm::cast_retty<X, Y*>::ret_type = const llvm::OverflowingBinaryOperator*]: Assertion `isa<X>(Val) && "cast<Ty>() argument of incompatible type!"' failed.
+Aborted (core dumped)
+Makefile:208: recipe for target 'o.x86_64/hv6/hv6.py' failed
+make: *** [o.x86_64/hv6/hv6.py] Error 134
+将hv6.ll翻译到hv6.py时出现了错误，当翻译到hv6.ll 150 line，@sys_map_pcipage时，报错。
+	
