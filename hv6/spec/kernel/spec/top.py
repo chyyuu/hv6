@@ -56,7 +56,7 @@ def spec_lemma_nr_pages_refcnt(kernelstate):
 
     return z3.And(*conj)
 
-
+# process pid's nr_dmapages == the number of dmapages owned by pid
 def spec_lemma_nr_dmapages_refcnt(kernelstate):
     conj = []
 
@@ -64,11 +64,13 @@ def spec_lemma_nr_dmapages_refcnt(kernelstate):
     dmapn = util.FreshBitVec('dmapn', dt.dmapn_t)
 
     # General invariant -- a free dma page has no owner
+    # valid(dmapn) & valid(pid) ==> typeof(dmapn) != PAGE_TYPE_FREE
     conj.append(z3.ForAll([dmapn], z3.Implies(is_dmapn_valid(dmapn),
         is_pid_valid(kernelstate.dmapages[dmapn].owner) ==
         (kernelstate.dmapages[dmapn].type != dt.page_type.PAGE_TYPE_FREE))))
 
     # PROC_UNUSED state implies refcount is 0 (sys_clone needs this)
+    # valid(pid) & state_of_PROC_UNSUSED(pid) ==> nr_dmapages(pid) = 0
     conj.append(z3.ForAll([pid], z3.Implies(is_pid_valid(pid),
         z3.Implies(kernelstate.procs[pid].state == dt.proc_state.PROC_UNUSED,
             kernelstate.procs[pid].nr_dmapages() == z3.BitVecVal(0, dt.size_t)))))
@@ -90,15 +92,18 @@ def spec_lemma_nr_children_refcnt(kernelstate):
     pid = util.FreshBitVec('pid', dt.pid_t)
 
     # pid has a parent <=> pid is not PROC_UNUSED
+    # valid(pid) & valid(ppid) ==> state(pid) != PROC_UNUSED
     conj.append(z3.ForAll([pid], z3.Implies(is_pid_valid(pid),
         is_pid_valid(kernelstate.procs[pid].ppid) ==
         (kernelstate.procs[pid].state != dt.proc_state.PROC_UNUSED))))
 
+    # valid(pid) & state(pid) == PROC_UNUSED ==> !valid(ppid)
     conj.append(z3.ForAll([pid], z3.Implies(is_pid_valid(pid),
         z3.Implies(kernelstate.procs[pid].state == dt.proc_state.PROC_UNUSED,
             z3.Not(is_pid_valid(kernelstate.procs[pid].ppid))))))
 
     # PROC_UNUSED state implies refcnt is 0
+    # valid(pid) & state(pid) == PROC_UNUSED ==> pid.nr_children == 0
     conj.append(z3.ForAll([pid], z3.Implies(is_pid_valid(pid),
         z3.Implies(kernelstate.procs[pid].state == dt.proc_state.PROC_UNUSED,
             kernelstate.procs[pid].nr_children() == z3.BitVecVal(0, dt.size_t)))))
@@ -127,14 +132,20 @@ def spec_lemma_nr_fds_refcnt(kernelstate):
     pid = util.FreshBitVec('pid', dt.pid_t)
     fd = util.FreshBitVec('fd', dt.fd_t)
 
+    # unused procs do not have any fds.
+    # valid(pid) & state(pid)== PROC_UNUSED ==> pid.nr_fds == 0
     conj.append(z3.ForAll([pid], z3.Implies(is_pid_valid(pid),
         z3.Implies(kernelstate.procs[pid].state == dt.proc_state.PROC_UNUSED,
             kernelstate.procs[pid].nr_fds() == z3.BitVecVal(0, dt.size_t)))))
 
+    # unused procs do not have any opened files
+    # valid(pid) & valid(fd) & state(pid) == PROC_UNUSED ==> !valid(openedfile(pid, fd))
     conj.append(z3.ForAll([pid, fd], z3.Implies(z3.And(is_pid_valid(pid), is_fd_valid(fd)),
         z3.Implies(kernelstate.procs[pid].state == dt.proc_state.PROC_UNUSED,
             z3.Not(is_fn_valid(kernelstate.procs[pid].ofile(fd)))))))
 
+    # a procs have opened a file, the state of this procs must not be UNUSED
+    # valid(pid) & valid(fd) & valid(fn)  ==> state(pid) != PROC_UNUSED
     conj.append(z3.ForAll([pid, fd], z3.Implies(
         z3.And(
             is_pid_valid(pid),
@@ -142,6 +153,7 @@ def spec_lemma_nr_fds_refcnt(kernelstate):
             is_fn_valid(kernelstate.procs[pid].ofile(fd))),
             kernelstate.procs[pid].state != dt.proc_state.PROC_UNUSED)))
 
+    # Correctness definition for `permutation` based refcount
     kernelstate.procs.nr_fds.check(conj,
             is_owner_valid=is_pid_valid,
             is_owned_valid=is_fd_valid,
@@ -151,6 +163,7 @@ def spec_lemma_nr_fds_refcnt(kernelstate):
     return z3.And(*conj)
 
 
+# process pid's nr_devs == the number of valid devices in its dev table
 def spec_lemma_nr_devs_refcnt(kernelstate):
     conj = []
 
@@ -158,10 +171,12 @@ def spec_lemma_nr_devs_refcnt(kernelstate):
     devid = util.FreshBitVec('devid', dt.devid_t)
 
     # unused procs don't own any devices
+    # valid([devid:pid]) ==> pid.state != PROC_UNUSED
     conj.append(z3.ForAll([devid], z3.Implies(
         is_pid_valid(kernelstate.pci[devid].owner),
         kernelstate.procs[kernelstate.pci[devid].owner].state != dt.proc_state.PROC_UNUSED)))
 
+    # valid(pid) & pid.state == UNUSED ==> pid.nr_devs == 0
     conj.append(z3.ForAll([pid], z3.Implies(kernelstate.procs[pid].state == dt.proc_state.PROC_UNUSED,
             kernelstate.procs[pid].nr_devs() == z3.BitVecVal(0, dt.size_t))))
 
@@ -174,7 +189,7 @@ def spec_lemma_nr_devs_refcnt(kernelstate):
 
     return z3.And(*conj)
 
-
+# process pid's ports number == the number of the ports owned by pid
 def spec_lemma_nr_ports_refcnt(kernelstate):
     conj = []
 
@@ -182,10 +197,11 @@ def spec_lemma_nr_ports_refcnt(kernelstate):
     port = util.FreshBitVec('port', dt.uint16_t)
 
     # unused procs don't own any ports
+    # valid([port:pid]) ==> [port:pid].state != UNUSED
     conj.append(z3.ForAll([port], z3.Implies(
         is_pid_valid(kernelstate.io[port].owner),
         kernelstate.procs[kernelstate.io[port].owner].state != dt.proc_state.PROC_UNUSED)))
-
+    # pid.state == UNUSED ==> pid.nr_ports == 0
     conj.append(z3.ForAll([pid], z3.Implies(kernelstate.procs[pid].state == dt.proc_state.PROC_UNUSED,
             kernelstate.procs[pid].nr_ports() == z3.BitVecVal(0, dt.size_t))))
 
@@ -198,7 +214,7 @@ def spec_lemma_nr_ports_refcnt(kernelstate):
 
     return z3.And(*conj)
 
-
+# the vectors have exclusive-ship and source owner-ship for procs
 def spec_lemma_nr_vectors(kernelstate):
     conj = []
 
@@ -210,13 +226,14 @@ def spec_lemma_nr_vectors(kernelstate):
 
     return z3.And(*conj)
 
-
+# intremaps
 def spec_lemma_nr_intremaps(kernelstate):
     conj = []
 
     index = util.FreshBitVec('index', dt.size_t)
 
     # active intremaps have valid pid owners
+    #valid(intremap_id) & intremap.state == IR_ACTIVE ==>valid(intemap.device's pci's pid)
     conj.append(z3.ForAll([index], z3.Implies(
         z3.And(
             is_intremap_valid(index),
@@ -280,6 +297,7 @@ def spec_corollary_pgwalk(kernelstate):
     isolation = util.Implies(present,
             kernelstate.pages[page].owner == pid,
             z3.Implies(writable, kernelstate.pages[page].type == dt.page_type.PAGE_TYPE_FRAME))
+    # valid(pid) & pid.state == active & valid(va) ==> page.owner == pid && page.type == FRAME (active is either EMBRYO, RUNNABLE or RUNNING)
 
     return z3.ForAll([pid] + va,
         z3.Implies(
@@ -299,11 +317,13 @@ def spec_corollary_iommu_pgwalk(kernelstate):
 
     pml4 = kernelstate.pci[devid].page_table_root
     page, writable, present = page_walk(kernelstate, pml4, *va)
-
+    
+    # after iommu page walk, if p bit present and the page returned from page walk, then page.type must equals to FRAME
+    # if P bit present && dmapage.owner == pid ==> page.type == PE_IOMMU_FRAME
     isolation = util.Implies(present,
             kernelstate.dmapages[page].owner == pid,
             kernelstate.dmapages[page].type == dt.page_type.PAGE_TYPE_IOMMU_FRAME)
-
+    # valid(pml4) && valide(va) ==> isolation
     return z3.ForAll([devid] + va,
         z3.Implies(
             z3.And(
@@ -312,7 +332,7 @@ def spec_corollary_iommu_pgwalk(kernelstate):
             ),
             isolation))
 
-
+# memory isolation
 def spec_lemma_isolation(kernelstate):
     conj = []
 
@@ -342,11 +362,11 @@ def spec_lemma_isolation(kernelstate):
             # The contents of the shadow pgatble correspond to the *actual*
             # contents of those pages according to our pn->pfn mapping fn.
             kernelstate.pages[pn].data(idx) == pgentry2pfn(kernelstate,
-                                                           kernelstate.pages[pn].pgtable_pn(idx),
-                                                           kernelstate.pages[pn].pgtable_perm(idx),
-                                                           kernelstate.pages[pn].pgtable_type(idx)),
+                                                           kernelstate.pages[pn].pgtable_pn(idx),       # page numbers. represent counts not a number
+                                                           kernelstate.pages[pn].pgtable_perm(idx),     # permission
+                                                           kernelstate.pages[pn].pgtable_type(idx)),    # page type
 
-            z3.Extract(62, 12, kernelstate.pages[pn].pgtable_perm(idx)) == z3.BitVecVal(0, 51),
+            z3.Extract(62, 12, kernelstate.pages[pn].pgtable_perm(idx)) == z3.BitVecVal(0, 51),         # 62 - 12 must 0
 
             # For the specification each entry in the pgtable has a type.
             # For each of those type, we must specify how it can appear in a
@@ -387,7 +407,7 @@ def spec_lemma_isolation(kernelstate):
                     # This must be at the PT level in the pgtable
                     kernelstate.pages[pn].type == dt.page_type.PAGE_TYPE_X86_PT,
 
-                    # There are 3 proc pages
+                    # There are 3 proc pages (PS:dt.NPAGES_PROC_TABLE = 6) use 6 page tables keep process information.
                     z3.ULT(kernelstate.pages[pn].pgtable_pn(idx),
                            dt.NPAGES_PROC_TABLE),
 
@@ -402,7 +422,7 @@ def spec_lemma_isolation(kernelstate):
                     # This must be at the PT level in the pgtable
                     kernelstate.pages[pn].type == dt.page_type.PAGE_TYPE_X86_PT,
 
-                    # There are 15 page desc pages
+                    # There are 15 page desc pages (ps: dt.NPAGES_PAGE_DESC_TABLE = 60)
                     z3.ULT(kernelstate.pages[pn].pgtable_pn(idx),
                            dt.NPAGES_PAGE_DESC_TABLE),
 
@@ -417,7 +437,7 @@ def spec_lemma_isolation(kernelstate):
                     # This must be at the PT level in the pgtable
                     kernelstate.pages[pn].type == dt.page_type.PAGE_TYPE_X86_PT,
 
-                    # There are 15 page desc pages
+                    # There are 2 page desc pages
                     z3.ULT(kernelstate.pages[pn].pgtable_pn(idx),
                            dt.NPAGES_FILE_TABLE),
 
@@ -432,7 +452,7 @@ def spec_lemma_isolation(kernelstate):
                     # This must be at the PT level in the pgtable
                     kernelstate.pages[pn].type == dt.page_type.PAGE_TYPE_X86_PT,
 
-                    # There are 15 page desc pages
+                    # There are 64 page desc pages
                     z3.ULT(kernelstate.pages[pn].pgtable_pn(idx),
                            dt.NPAGES_DEVICES),
 
@@ -492,6 +512,7 @@ def spec_lemma_iommu_isolation(kernelstate):
     idx = util.FreshBitVec('page_index', dt.size_t)
     devid = util.FreshBitVec('devid', dt.devid_t)
 
+    # valid device can ensures valid device.owner, page table root's type must IOMMU_PML4
     conj.append(z3.ForAll([devid], z3.Implies(
         is_pn_valid(kernelstate.pci[devid].page_table_root),
         z3.And(

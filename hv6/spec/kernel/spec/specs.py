@@ -28,7 +28,7 @@ from helpers import (
         is_pn_valid,
 )
 
-
+# set current procs to PROC_EMBRYO
 def sys_set_runnable(old, pid):
     cond = z3.And(
         is_pid_valid(pid),
@@ -39,25 +39,36 @@ def sys_set_runnable(old, pid):
     new.procs[pid].state = dt.proc_state.PROC_RUNNABLE
     return cond, util.If(cond, new, old)
 
-
+# reclaim a page 
 def sys_reclaim_page(old, pn):
+    # reclaim condition
     cond = z3.And(
         is_pn_valid(pn),
         old.pages[pn].type != dt.page_type.PAGE_TYPE_FREE,
         is_pid_valid(old.pages[pn].owner),
+        # procs's state must be PROC_ZOMBIE before reclaim
         old.procs[old.pages[pn].owner].state == dt.proc_state.PROC_ZOMBIE,
+        # procs owns device count equals to 0
         old.procs[old.pages[pn].owner].nr_devs() == z3.BitVecVal(0, dt.size_t),
     )
-
+    # post-condition
     new = old.copy()
-
+    # procs' page count --;
     new.procs[new.pages[pn].owner].nr_pages[pn] -= 1
     new.pages[pn].type = dt.page_type.PAGE_TYPE_FREE
     new.pages[pn].owner = z3.BitVecVal(0, dt.pid_t)
-
+    # do not set page.data and any other property. this means that there is no need clear data in this page.
     return cond, util.If(cond, new, old)
 
-
+# parameter
+# @old:             old state
+# @pid              current procs or pid's parent procs is current procs.
+# @frm              from page number
+# @index            page index
+# @to               to page number
+# @perm             permission
+# @from_type        from page type
+# @to_type          to page type
 def alloc_page_table(old, pid, frm, index, to, perm, from_type, to_type):
     cond = z3.And(
         # The to argument is a valid page and is marked as free
@@ -91,7 +102,9 @@ def alloc_page_table(old, pid, frm, index, to, perm, from_type, to_type):
 
     new.pages[to].owner = pid
     new.pages[to].type = to_type
-
+    # |---------------------|---------|
+    # |     page number     |   perm  |
+    # |     52              |   12    |
     new.pages[frm].data[index] = (
         (z3.UDiv(new.pages_ptr_to_int, util.i64(dt.PAGE_SIZE)) + to) << dt.PTE_PFN_SHIFT) | perm
 
@@ -105,13 +118,14 @@ def alloc_page_table(old, pid, frm, index, to, perm, from_type, to_type):
 
     new.pages[frm].pgtable_perm[index] = perm
     new.pages[frm].pgtable_type[index] = dt.PGTYPE_PAGE
-
+    # Zero out the "to" page's pn and perm
     new.pages[to].pgtable_pn = util.i64(0)
     new.pages[to].pgtable_perm = util.i64(0)
     new.pages[to].pgtable_type = dt.PGTYPE_NONE
 
+    # page count ++
     new.procs[pid].nr_pages[to] += 1
-
+    # flash tlb
     new.flush_tlb(pid)
 
     return cond, util.If(cond, new, old)
@@ -136,7 +150,11 @@ def sys_alloc_frame(old, pid, frm, index, to, perm):
     return alloc_page_table(old, pid, frm, index, to, perm,
                             dt.page_type.PAGE_TYPE_X86_PT, dt.page_type.PAGE_TYPE_FRAME)
 
-
+# copy a frame
+# @old          old state
+# @frm          from page number
+# @pid          to's pid
+# @to           to page number
 def sys_copy_frame(old, frm, pid, to):
     cond = z3.And(
         # frm is a valid FRAME owned by current
@@ -185,11 +203,14 @@ def sys_protect_frame(old, pt, index, frame, perm):
         old.pages[pt].data(index) & dt.PTE_P != 0,
 
         # the entry in the pt must be the frame
+        # |-----------|--------------------|
+        # |     0     |         data       |
+        # |     24    |          39        |
         z3.Extract(63, 40, z3.UDiv(old.pages_ptr_to_int,
-                                   util.i64(dt.PAGE_SIZE)) + frame) == z3.BitVecVal(0, 24),
-        z3.Extract(39, 0, z3.UDiv(old.pages_ptr_to_int, util.i64(
-            dt.PAGE_SIZE)) + frame) == z3.Extract(51, 12, old.pages[pt].data(index)),
-
+                                    util.i64(dt.PAGE_SIZE)) + frame) == z3.BitVecVal(0, 24),
+        z3.Extract(39, 0, z3.UDiv(old.pages_ptr_to_int, 
+                                    util.i64(dt.PAGE_SIZE)) + frame) == z3.Extract(51, 12, old.pages[pt].data(index)),
+                                    
         # no unsafe bits in perm is set
         perm & (dt.MAX_INT64 ^ dt.PTE_PERM_MASK) == 0,
 
@@ -198,7 +219,8 @@ def sys_protect_frame(old, pt, index, frame, perm):
     )
 
     new = old.copy()
-
+    
+    # set permission
     new.pages[pt].data[index] = (
         (z3.UDiv(new.pages_ptr_to_int, util.i64(dt.PAGE_SIZE)) + frame) << dt.PTE_PFN_SHIFT) | perm
 
@@ -209,8 +231,14 @@ def sys_protect_frame(old, pt, index, frame, perm):
 
     return cond, util.If(cond, new, old)
 
-
+# parameter
+# @old              old state
+# @pid              new pid
+# @pml4             root
+# @stack            a free stack page
+# @hvm              a free hvm page
 def sys_clone(old, pid, pml4, stack, hvm):
+    # pid, pml4, stack and hvm are all not used
     cond = z3.And(
         is_pid_valid(pid),
         old.procs[pid].state == dt.proc_state.PROC_UNUSED,
@@ -306,7 +334,7 @@ def sys_set_proc_name(old, name0, name1):
     # The syscall should not change the state.
     return z3.BoolVal(True), old
 
-
+# reclaim a procs
 def sys_reap(old, pid):
     cond = z3.And(
         is_pid_valid(pid),
@@ -326,11 +354,11 @@ def sys_reap(old, pid):
         old.procs[pid].nr_vectors() == z3.BitVecVal(0, dt.size_t),
         old.procs[pid].nr_intremaps() == z3.BitVecVal(0, dt.size_t),
     )
-
+    # set 
     new = old.copy()
 
     new.procs[old.current].nr_children[pid] -= 1
-
+    #zero out pid's property
     new.procs[pid].state = dt.proc_state.PROC_UNUSED
     new.procs[pid].ppid = z3.BitVecVal(0, dt.pid_t)
     new.procs[pid].page_table_root = z3.BitVecVal(0, dt.pn_t)
@@ -346,6 +374,7 @@ def sys_reap(old, pid):
 
 def sys_map_proc(old, pid, frm, index, n, perm):
     cond = z3.And(
+        # page number < dt.NPAGES_PROC_TABLE
         z3.ULT(n, dt.NPAGES_PROC_TABLE),
 
         is_pid_valid(pid),
@@ -387,7 +416,7 @@ def sys_map_proc(old, pid, frm, index, n, perm):
 
     return cond, util.If(cond, new, old)
 
-
+# mapping at the page_table_root
 def sys_map_pml4(old, pid, index, perm):
 
     cond = z3.And(
@@ -475,7 +504,7 @@ def sys_map_page_desc(old, pid, frm, index, n, perm):
 
     return cond, util.If(cond, new, old)
 
-
+# map a dev page to pgtable's entry
 def sys_map_dev(old, pid, frm, index, n, perm):
     cond = z3.And(
         z3.ULT(n, dt.NPAGES_DEVICES),
@@ -519,7 +548,12 @@ def sys_map_dev(old, pid, frm, index, n, perm):
 
     return cond, util.If(cond, new, old)
 
-
+# map a file page to pagetable's entry. set entry permission and shadow pagetable mainly.
+# @old              old state machine
+# @pid              map to pid
+# @frm              page table 
+# @index            page table entry
+# @perm             permission
 def sys_map_file(old, pid, frm, index, n, perm):
     cond = z3.And(
         z3.ULT(n, dt.NPAGES_FILE_TABLE),
@@ -550,7 +584,7 @@ def sys_map_file(old, pid, frm, index, n, perm):
     )
 
     new = old.copy()
-
+    # set permission
     new.pages[frm].data[index] = (
         (z3.UDiv(new.file_table_ptr_to_int, util.i64(dt.PAGE_SIZE)) + n) << dt.PTE_PFN_SHIFT) | perm
 
@@ -563,7 +597,13 @@ def sys_map_file(old, pid, frm, index, n, perm):
 
     return cond, util.If(cond, new, old)
 
-
+#
+# @old              old state
+# @frm              page that page entry belong to
+# @index            page entry
+# @to               the page that page entry point to
+# @from_type        frm's page type
+# @to_type          free's page type
 def free_page_table_page(old, frm, index, to, from_type, to_type):
     cond = z3.And(
         # The frm pn has the correct type and owned by current
@@ -618,7 +658,7 @@ def sys_free_pt(old, frm, index, to):
 def sys_free_frame(old, frm, index, to):
     return free_page_table_page(old, frm, index, to, dt.page_type.PAGE_TYPE_X86_PT, dt.page_type.PAGE_TYPE_FRAME)
 
-
+# swtich to specific pid.
 def sys_switch(old, pid):
     cond = z3.And(
         is_pid_valid(pid),
@@ -630,8 +670,10 @@ def sys_switch(old, pid):
     )
 
     new = old.copy()
+    # before switch, if the current procs' is killed, this procs' state must ZOMBIE after switch
     new.procs[old.current].state = util.If(
         old.procs[old.current].killed, dt.proc_state.PROC_ZOMBIE, dt.proc_state.PROC_RUNNABLE)
+    # current's state must be PROC_RUNNING.
     new.procs[pid].state = dt.proc_state.PROC_RUNNING
     new.current = pid
 
@@ -677,7 +719,8 @@ def sys_reparent(old, pid):
 
     return cond, util.If(cond, new, old)
 
-
+# create a file
+# @fd               file descriptor, the correctness of fd is determined by user space
 def sys_create(old, fd, fn, type, value, omode):
     cond = z3.And(
         type != dt.file_type.FD_NONE,
@@ -743,7 +786,7 @@ def sys_close(old, pid, fd):
 
     return cond, util.If(cond, util.If(ref == 0, new2, new), old)
 
-
+# copy a file descriptor 
 def sys_dup(old, oldfd, pid, newfd):
     cond = z3.And(
         is_pid_valid(pid),
@@ -849,7 +892,7 @@ def sys_lseek(old, fd, offset):
 
     return cond, util.If(cond, new, old)
 
-
+# see other map funcation. almost the same 
 def sys_map_pcipage(old, pt, index, pcipn, perm):
     cond = z3.And(
         # pt is a valid PT page
@@ -888,14 +931,17 @@ def sys_map_pcipage(old, pt, index, pcipn, perm):
 
 def sys_alloc_iommu_root(old, devid, pn):
     cond = z3.And(
+        # no procs have this device 
         old.pci[devid].owner == 0,
         is_pn_valid(pn),
+        # it is must be a free page which used to allocate.
         old.pages[pn].type == dt.page_type.PAGE_TYPE_FREE,
     )
 
     new = old.copy()
-
+    # device's owner is current process.
     new.pci[devid].owner = old.current
+    # device's root table is pn
     new.pci[devid].page_table_root = pn
 
     new.pages[pn].owner = old.current
@@ -910,7 +956,7 @@ def sys_alloc_iommu_root(old, devid, pn):
 
     return cond, util.If(cond, new, old)
 
-
+# like allocate page table page.
 def alloc_iommu_page_table_page(old, frm, index, to, perm, from_type, to_type):
     cond = z3.And(
         # to page is valid and free
