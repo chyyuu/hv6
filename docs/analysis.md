@@ -10,8 +10,6 @@
 
 ### sys_reparent
 
-### 
-
 ##  mem related syscalls
 
 ### sys_reclaim_page
@@ -62,7 +60,7 @@
 
 ### sys_dup2
 
-###sys_lseek
+### sys_lseek
 
 ## IPC related syscalls
 
@@ -76,9 +74,9 @@
 
 ## device related syscalls
 
-###sys_map_pcipage
+### sys_map_pcipage
 
-###sys_alloc_iommu_root 
+### sys_alloc_iommu_root 
 
 ### sys_alloc_iommu_pdpt
 
