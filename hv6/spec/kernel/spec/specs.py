@@ -34,7 +34,7 @@ def sys_set_runnable(old, pid):
         is_pid_valid(pid),
         old.procs[pid].ppid == old.current,
         old.procs[pid].state == dt.proc_state.PROC_EMBRYO)
-
+    print old.procs[old.current].state
     new = old.copy()
     new.procs[pid].state = dt.proc_state.PROC_RUNNABLE
     return cond, util.If(cond, new, old)
@@ -105,18 +105,22 @@ def alloc_page_table(old, pid, frm, index, to, perm, from_type, to_type):
     # |---------------------|---------|
     # |     page number     |   perm  |
     # |     52              |   12    |
+    # page number = pages_ptr_to_int / PAGE_SIZE + to
+    # page number store in page table entry is like above 
     new.pages[frm].data[index] = (
         (z3.UDiv(new.pages_ptr_to_int, util.i64(dt.PAGE_SIZE)) + to) << dt.PTE_PFN_SHIFT) | perm
 
     # Zero out the new page
     new.pages[to].data = util.i64(0)
 
-    # Maintain the "shadow" pgtable
+    # current page's page table entry at 'index''s page numbe equals 'to' page number. 
     new.pages[frm].pgtable_pn[index] = to
+    # maintain shadow page 
     new.pages[to].pgtable_reverse_pn = frm
     new.pages[to].pgtable_reverse_idx = index
-
+	# page permission
     new.pages[frm].pgtable_perm[index] = perm
+    # page type
     new.pages[frm].pgtable_type[index] = dt.PGTYPE_PAGE
     # Zero out the "to" page's pn and perm
     new.pages[to].pgtable_pn = util.i64(0)
@@ -928,6 +932,7 @@ def sys_map_pcipage(old, pt, index, pcipn, perm):
 
     return cond, util.If(cond, new, old)
 
+# iommu --> device.c
 
 def sys_alloc_iommu_root(old, devid, pn):
     cond = z3.And(

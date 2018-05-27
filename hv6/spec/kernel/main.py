@@ -94,7 +94,7 @@ _syscalls = [
     "extintr",
 ]
 
-
+# panic in contex
 def panic(ctx, *args, **kwargs):
     ue = ex.UnreachableException(ctx.path_condition[-1])
     ue.stacktrace = copy.deepcopy(ctx.stacktrace[-1])
@@ -103,6 +103,7 @@ def panic(ctx, *args, **kwargs):
 def putchar(ctx, *args, **kwargs):
     return
 
+# memory funcation in contex, sys_clone syscall invokes this function.
 
 def memcpy(ctx, dst, src, size):
     if isinstance(dst, BitcastPointer):
@@ -395,7 +396,9 @@ syslog.read = lambda *args: syslog
 
 class HV6Meta(type):
     def __new__(cls, name, parents, dct):
+        # invoke add function to generate test cases.
         cls._add_funcs(name, parents, dct)
+        
         return super(HV6Meta, cls).__new__(cls, name, parents, dct)
 
     @classmethod
@@ -406,10 +409,11 @@ class HV6Meta(type):
             dct['test_{}'.format(syscall)] = lambda self, syscall=syscall: \
                 self._syscall_generic(syscall)
 
-
+# HV6Base inherit unittest.
 class HV6Base(unittest.TestCase):
+	# set metaclass 'HV6Meta', it will generate test case in HV6Base, using class HV6Meta.
     __metaclass__ = HV6Meta
-
+	# very testcase will call this function to verify the consistency between hv6.py to specification.
     def _prove(self, cond, pre=None, return_model=False, minimize=True):
         if minimize:
             self.solver.push()
@@ -460,7 +464,7 @@ def newctx():
     # initialize them, slightly faster execution time.
     ctx.eval.declare_global_constant = ctx.eval.declare_global_variable
     libirpy.initctx(ctx, hv6)
-
+    # create a function with the name of tlbinv, pid_t as the parm, and bool type as the return value.
     ctx.globals['#tlbinv'] = util.FreshFunction('tlbinv', dt.pid_t, dt.bool_t)
     ctx.globals['#iotlbinv'] = util.FreshBool('iotlbinv')
 
@@ -537,6 +541,7 @@ class HV6(HV6Base):
     def _syscall_generic(self, name):
         args = syscall_spec.get_syscall_args(name)
         res = self.ctx.call('@' + name, *args)
+        print res
         cond, newstate = getattr(spec, name)(self.state, *args)
         model = self._prove(z3.And(spec.state_equiv(self.ctx, newstate),
                                    cond == (res == util.i32(0))),
@@ -681,7 +686,6 @@ if __name__ == "__main__":
 
     del sys.argv[:]
     sys.argv.extend(unknown)
-
     if INTERACTIVE:
         Solver = z3.Solver
 

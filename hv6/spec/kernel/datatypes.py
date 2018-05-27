@@ -21,7 +21,8 @@ import libirpy
 from libirpy import util
 from hv6py.base import BaseStruct, Struct, Map, Refcnt, Refcnt2
 
-
+# inital ctx with metadata, then find all of enum, and initial page_type
+# file_type proc_state and intremap_state.
 def _populate_enums():
     module = sys.modules[__name__]
     ctx = libirpy.newctx()
@@ -39,15 +40,15 @@ def _populate_enums():
 
                 setattr(module, name + '_t', z3.BitVecSort(size))
                 enum = {}
-
+                # get the enum name and value
                 for element in ctx.metadata.get(elements):
                     element = ctx.metadata.get(element)
                     assert element[0] == 'DIEnumerator'
                     element_name = element[1].get('name')
                     element_value = element[1].get('value')
                     enum[element_name] = z3.BitVecVal(element_value, size)
-
                 setattr(module, name, type(name, (), enum))
+
 
 
 # These are populated from llvm metadata info
@@ -59,8 +60,7 @@ intremap_state_t = None
 
 # Fetch the enums from the llvm metadata and populate this module with their values
 _populate_enums()
-
-
+# when I define following type use class directly, it not works.
 assert page_type_t is not None
 assert file_type_t is not None
 assert proc_state_t is not None
@@ -68,19 +68,24 @@ assert proc_state_t is not None
 PAGE_SIZE = 4096
 
 PCI_START = 0xa0000000
-PCI_END = 0x100000000
-
+PCI_END =   0x100000000
+# page number 
 NPAGE = 8192
 NDMAPAGE = 512
 NPROC = 64
 # NTSLICE
+# max opend file
 NOFILE = 16
+# max file number
 NFILE = 128
+# max device number
 NPCIDEV = 64
+# max intermap number, what is used for?
 NINTREMAP = 8
+# max PIC page number
 NPCIPAGE = (PCI_END - PCI_START) / PAGE_SIZE
 
-
+# use z3py type define c type.
 bool_t = z3.BoolSort()
 
 size_t = z3.BitVecSort(64)
@@ -97,25 +102,33 @@ int16_t = z3.BitVecSort(16)
 int8_t = z3.BitVecSort(8)
 int = int32_t
 
-
+#page number
 pn_t = z3.BitVecSort(64)
+# dma page number
 dmapn_t = z3.BitVecSort(64)
+# file number
 fn_t = z3.BitVecSort(64)
+# file descriptor
 fd_t = z3.BitVecSort(32)
+# page table entry
 pte_t = z3.BitVecSort(64)
 dmar_pte_t = z3.BitVecSort(64)
+# process id
 pid_t = z3.BitVecSort(64)
+# ???
 off_t = z3.BitVecSort(64)
+# device id
 devid_t = z3.BitVecSort(16)
-
+# ????
 uintptr_t = z3.BitVecSort(64)
+# physicall address
 physaddr_t = uintptr_t
-
+# initial process id
 INITPID = z3.BitVecVal(1, pid_t)
 
 MAX_INT64 = z3.BitVecVal(2 ** 64 - 1, 64)
 
-
+# 4 level page table 
 def FreshVA():
     idx1 = util.FreshBitVec('idx1', size_t)
     idx2 = util.FreshBitVec('idx2', size_t)
@@ -150,7 +163,7 @@ DMAR_PTE_TM = BIT64(62)   # Transient Mapping
 DMAR_PTE_ADDR_SHIFT = z3.BitVecVal(12, uint64_t)
 PTE_PFN_SHIFT = z3.BitVecVal(12, uint64_t)
 
-
+# defines page type
 PGTYPE_PAGE = z3.BitVecVal(0, uint64_t)
 PGTYPE_PROC = z3.BitVecVal(1, uint64_t)
 PGTYPE_PAGE_DESC = z3.BitVecVal(2, uint64_t)
@@ -160,7 +173,7 @@ PGTYPE_PCIPAGE = z3.BitVecVal(5, uint64_t)
 PGTYPE_IOMMU_FRAME = z3.BitVecVal(6, uint64_t)
 PGTYPE_NONE = z3.BitVecVal(7, uint64_t)
 
-
+# defines max page numbers of different type.
 NPAGES_PAGES = NPAGE
 NPAGES_PROC_TABLE = 6
 NPAGES_FILE_TABLE = 2
@@ -169,101 +182,100 @@ NPAGES_DEVICES = 2
 
 
 class PCI(Struct):
-    owner = Map(devid_t, pid_t)
-    page_table_root = Map(devid_t, pn_t)
+    owner = Map(devid_t, pid_t)                         # device's process id
+    page_table_root = Map(devid_t, pn_t)                # device's page table root
 
 
 class Vectors(Struct):
-    owner = Map(uint8_t, pid_t)
+    owner = Map(uint8_t, pid_t)                         # interupt vector number corresponding process
 
 
 class IO(Struct):
-    owner = Map(uint16_t, pid_t)
+    owner = Map(uint16_t, pid_t)                        # IO port to process id.
 
 
-class Intremap(Struct):
-    state = Map(size_t, intremap_state_t)
+class Intremap(Struct):                                 # interrupt remmaping
+    state = Map(size_t, intremap_state_t)               # 
     devid = Map(size_t, devid_t)
-    vector = Map(size_t, uint8_t)
+    vector = Map(size_t, uint8_t)                       # address to vector number.
 
 
 class Page(Struct):
-    data = Map(pn_t, uint64_t, uint64_t)
-    owner = Map(pn_t, pid_t)
-    type = Map(pn_t, page_type_t)
+    data = Map(pn_t, uint64_t, uint64_t)                # page num & index --> data; data = page number(52 bit) + permission(12 bit);
+    owner = Map(pn_t, pid_t)                            # page --> pid
+    type = Map(pn_t, page_type_t)                       # page's type
+    pgtable_pn = Map(pn_t, uint64_t, uint64_t)          # (pn, index, pn), i.e.,page number that the page of page table entry i corresponding to .
+    pgtable_perm = Map(pn_t, uint64_t, uint64_t)		# (pn, index, perm) page permission that the page of page table entry i corresponding to .
+    pgtable_type = Map(pn_t, uint64_t, uint64_t)		# (pn, index, type) page type that the page of page table entry i corresponding to .
 
-    pgtable_pn = Map(pn_t, uint64_t, uint64_t)
-    pgtable_perm = Map(pn_t, uint64_t, uint64_t)
-    pgtable_type = Map(pn_t, uint64_t, uint64_t)
-
-    pgtable_reverse_pn = Map(pn_t, pn_t)
-    pgtable_reverse_idx = Map(pn_t, pn_t)
+    pgtable_reverse_pn = Map(pn_t, pn_t)				# shadow page table
+    pgtable_reverse_idx = Map(pn_t, pn_t)				# the front page's page table entry's index.
 
 
 class DMAPage(Struct):
-    owner = Map(pn_t, pid_t)
-    type = Map(pn_t, page_type_t)
+    owner = Map(pn_t, pid_t)							# the process which owned this page
+    type = Map(pn_t, page_type_t)						# the page ty
 
 
 class PCIPage(Struct):
-    owner = Map(pn_t, devid_t)
-    valid = Map(pn_t, bool_t)
+    owner = Map(pn_t, devid_t)							# the device which owned this page
+    valid = Map(pn_t, bool_t)							# is valid or not of this page
 
 
 class Proc(Struct):
-    state = Map(pid_t, proc_state_t)
-    ppid = Map(pid_t, pid_t)
-    killed = Map(pid_t, bool_t)
+    state = Map(pid_t, proc_state_t)					# the state of process
+    ppid = Map(pid_t, pid_t)							# parent process id of process
+    killed = Map(pid_t, bool_t)							# killed or not of process
 
-    ipc_from = Map(pid_t, pid_t)
+    ipc_from = Map(pid_t, pid_t)						# process --> current process
     ipc_val = Map(pid_t, uint64_t)
     ipc_page = Map(pid_t, pn_t)
     ipc_size = Map(pid_t, size_t)
     ipc_fd = Map(pid_t, fd_t)
 
-    ofile = Map(pid_t, fd_t, fn_t)
+    ofile = Map(pid_t, fd_t, fn_t)						# (process, file descriptor, file NO) opened file of process 
 
-    nr_children = Refcnt(pid_t, pid_t, size_t, initial_offset=1)
-    nr_fds = Refcnt(pid_t, fd_t, size_t)
-    nr_pages = Refcnt(pid_t, pn_t, size_t)
-    nr_dmapages = Refcnt(pid_t, pn_t, size_t)
-    nr_devs = Refcnt(pid_t, devid_t, size_t)
-    nr_ports = Refcnt(pid_t, uint16_t, size_t)
-    nr_vectors = Refcnt(pid_t, uint8_t, size_t)
-    nr_intremaps = Refcnt(pid_t, size_t, size_t)
+    nr_children = Refcnt(pid_t, pid_t, size_t, initial_offset=1) # (process, child prcess, child process' count)
+    nr_fds = Refcnt(pid_t, fd_t, size_t)				# opened file descriptor
+    nr_pages = Refcnt(pid_t, pn_t, size_t)				# owned page numbers
+    nr_dmapages = Refcnt(pid_t, pn_t, size_t)			# owned DMA page numbers
+    nr_devs = Refcnt(pid_t, devid_t, size_t)			# owned device numbers
+    nr_ports = Refcnt(pid_t, uint16_t, size_t)			# owned IO ports numbers
+    nr_vectors = Refcnt(pid_t, uint8_t, size_t)			# owned vector numbers
+    nr_intremaps = Refcnt(pid_t, size_t, size_t)		# owned intremap numbers.
 
-    stack = Map(pid_t, pn_t)
-    hvm = Map(pid_t, pn_t)
-    page_table_root = Map(pid_t, pn_t)
+    stack = Map(pid_t, pn_t)							# stack coresponding pages
+    hvm = Map(pid_t, pn_t)								# hvm page corresponding 
+    page_table_root = Map(pid_t, pn_t)					# the page table root 
 
-    use_io_bitmap = Map(pid_t, bool_t)
-    io_bitmap_a = Map(pid_t, pn_t)
+    use_io_bitmap = Map(pid_t, bool_t)					# use io bitmap or not
+    io_bitmap_a = Map(pid_t, pn_t)						# the page which io bitmap a corresponding to 
     io_bitmap_b = Map(pid_t, pn_t)
 
-    intr = Map(pid_t, uint64_t, uint64_t)
+    intr = Map(pid_t, uint64_t, uint64_t)				# ???????????
 
-    tlbinv = Map(pid_t, bool_t)
+    tlbinv = Map(pid_t, bool_t)							# flush tlb or not
 
 
 class File(Struct):
-    type = Map(fn_t, file_type_t)
-    refcnt = Refcnt2(fn_t, (pid_t, fd_t), size_t)
+    type = Map(fn_t, file_type_t)						# the file type which file number corresponding to
+    refcnt = Refcnt2(fn_t, (pid_t, fd_t), size_t)		# how to expand use english?
     value = Map(fn_t, uint64_t)
-    omode = Map(fn_t, uint64_t)
-    offset = Map(fn_t, size_t)
+    omode = Map(fn_t, uint64_t)							# opened mode
+    offset = Map(fn_t, size_t)							# offset.
 
 
 """
 Global kernel state for specification
 """
 class KernelState(BaseStruct):
-    pages_ptr_to_int = Map(uint64_t)
-    proc_table_ptr_to_int = Map(uint64_t)
-    page_desc_table_ptr_to_int = Map(uint64_t)
-    file_table_ptr_to_int = Map(uint64_t)
-    devices_ptr_to_int = Map(uint64_t)
-    dmapages_ptr_to_int = Map(uint64_t)
-
+    pages_ptr_to_int = Map(uint64_t)					# page start pointer 
+    proc_table_ptr_to_int = Map(uint64_t)				# process table pointer 
+    page_desc_table_ptr_to_int = Map(uint64_t)			# process descripte table pointer
+    file_table_ptr_to_int = Map(uint64_t)				# file table pointer 
+    devices_ptr_to_int = Map(uint64_t)					# device pointer
+    dmapages_ptr_to_int = Map(uint64_t)					# dma page
+	# instance all of kernel object.
     procs = Proc()
     pages = Page()
     dmapages = DMAPage()
@@ -273,9 +285,9 @@ class KernelState(BaseStruct):
     vectors = Vectors()
     io = IO()
     intremaps = Intremap()
-
+	# current process
     current = Map(pid_t)
-    iotlbinv = Map(bool_t)
+    iotlbinv = Map(bool_t)								# flush iotlb or not
 
     def flush_iotlb(self):
         self.iotlbinv = z3.BoolVal(True)
@@ -283,7 +295,7 @@ class KernelState(BaseStruct):
     def flush_tlb(self, pid):
         self.procs[pid].tlbinv = z3.BoolVal(True)
 
-
+# useless
 def state_to_dict(state, model):
     m = {
         'procs': {},

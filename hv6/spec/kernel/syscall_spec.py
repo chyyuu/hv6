@@ -18,7 +18,7 @@ import libirpy.util as util
 
 import datatypes as dt
 
-
+# all of the funcation are used to get the paremeters.
 def _sys_alloc():
     pid = util.FreshBitVec('pid', dt.pid_t)
     frm = util.FreshBitVec('from', dt.pn_t)
