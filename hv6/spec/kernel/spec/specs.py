@@ -134,22 +134,22 @@ def alloc_page_table(old, pid, frm, index, to, perm, from_type, to_type):
 
     return cond, util.If(cond, new, old)
 
-
+# allocate a pdpt page
 def sys_alloc_pdpt(old, pid, frm, index, to, perm):
     return alloc_page_table(old, pid, frm, index, to, perm,
                             dt.page_type.PAGE_TYPE_X86_PML4, dt.page_type.PAGE_TYPE_X86_PDPT)
 
-
+# allocate a page directory page
 def sys_alloc_pd(old, pid, frm, index, to, perm):
     return alloc_page_table(old, pid, frm, index, to, perm,
                             dt.page_type.PAGE_TYPE_X86_PDPT, dt.page_type.PAGE_TYPE_X86_PD)
 
-
+# allocate a page table page
 def sys_alloc_pt(old, pid, frm, index, to, perm):
     return alloc_page_table(old, pid, frm, index, to, perm,
                             dt.page_type.PAGE_TYPE_X86_PD, dt.page_type.PAGE_TYPE_X86_PT)
 
-
+# allocate a frame
 def sys_alloc_frame(old, pid, frm, index, to, perm):
     return alloc_page_table(old, pid, frm, index, to, perm,
                             dt.page_type.PAGE_TYPE_X86_PT, dt.page_type.PAGE_TYPE_FRAME)
@@ -189,16 +189,22 @@ def sys_copy_frame(old, frm, pid, to):
 
     return cond, util.If(cond, new, old)
 
-
+# protect a frame
+# @old             old state
+# @pt              page table
+# @index           index 
+# @frame           frame that set the permisison 
+# @perm            permission 
 def sys_protect_frame(old, pt, index, frame, perm):
     cond = z3.And(
+        # pt must valid, pt's type is Page Table and pt's owner must be current process.
         is_pn_valid(pt),
         old.pages[pt].type == dt.page_type.PAGE_TYPE_X86_PT,
         old.pages[pt].owner == old.current,
 
         # Index is a valid page index
         z3.ULT(index, 512),
-
+        # frame valid, type must be PAGE_TYPE_FRAME and frm's owenr is current process.
         is_pn_valid(frame),
         old.pages[frame].type == dt.page_type.PAGE_TYPE_FRAME,
         old.pages[frame].owner == old.current,
@@ -206,7 +212,7 @@ def sys_protect_frame(old, pt, index, frame, perm):
         # index must be preset
         old.pages[pt].data(index) & dt.PTE_P != 0,
 
-        # the entry in the pt must be the frame
+        # the page table entry structure
         # |-----------|--------------------|
         # |     0     |         data       |
         # |     24    |          39        |
@@ -230,7 +236,7 @@ def sys_protect_frame(old, pt, index, frame, perm):
 
     # The only thing that changed is the permission.
     new.pages[pt].pgtable_perm[index] = perm
-
+    # flush tlb
     new.flush_tlb(old.current)
 
     return cond, util.If(cond, new, old)
@@ -242,7 +248,7 @@ def sys_protect_frame(old, pt, index, frame, perm):
 # @stack            a free stack page
 # @hvm              a free hvm page
 def sys_clone(old, pid, pml4, stack, hvm):
-    # pid, pml4, stack and hvm are all not used
+    # pid, pml4, stack and hvm are all not used and are all valid.
     cond = z3.And(
         is_pid_valid(pid),
         old.procs[pid].state == dt.proc_state.PROC_UNUSED,
@@ -255,7 +261,7 @@ def sys_clone(old, pid, pml4, stack, hvm):
 
         is_pn_valid(hvm),
         old.pages[hvm].type == dt.page_type.PAGE_TYPE_FREE,
-
+        # pml4, stack and hvm must different page.
         z3.Distinct(pml4, stack, hvm),
     )
     new = old.copy()
@@ -307,12 +313,13 @@ def sys_clone(old, pid, pml4, stack, hvm):
     new.pages[hvm].type = dt.page_type.PAGE_TYPE_PROC_DATA
     new.pages[hvm].owner = pid
     new.pages[hvm].data = util.i64(0)
+    # allocate a hvm page, so the pid process' page numbers must add 1.
     new.procs[pid].nr_pages[hvm] += 1
-
+    # set pid process' root page table, stack and hvn
     new.procs[pid].page_table_root = pml4
     new.procs[pid].stack = stack
     new.procs[pid].hvm = hvm
-
+    # pid process must be the child process of current process.
     new.procs[new.current].nr_children[pid] += 1
 
     # Copy parent's hvm to child's hvm
@@ -358,11 +365,11 @@ def sys_reap(old, pid):
         old.procs[pid].nr_vectors() == z3.BitVecVal(0, dt.size_t),
         old.procs[pid].nr_intremaps() == z3.BitVecVal(0, dt.size_t),
     )
-    # set 
+    # get a copy
     new = old.copy()
-
+    # reduce one children process of current
     new.procs[old.current].nr_children[pid] -= 1
-    #zero out pid's property
+    #zero out all of pid's property
     new.procs[pid].state = dt.proc_state.PROC_UNUSED
     new.procs[pid].ppid = z3.BitVecVal(0, dt.pid_t)
     new.procs[pid].page_table_root = z3.BitVecVal(0, dt.pn_t)
@@ -375,7 +382,7 @@ def sys_reap(old, pid):
 
     return cond, util.If(cond, new, old)
 
-
+# map a process -- maintain the "shadow" pgtable
 def sys_map_proc(old, pid, frm, index, n, perm):
     cond = z3.And(
         # page number < dt.NPAGES_PROC_TABLE
@@ -407,7 +414,7 @@ def sys_map_proc(old, pid, frm, index, n, perm):
     )
 
     new = old.copy()
-
+    # set page table's data on index's page number and permission
     new.pages[frm].data[index] = (
         (z3.UDiv(new.proc_table_ptr_to_int, util.i64(dt.PAGE_SIZE)) + n) << dt.PTE_PFN_SHIFT) | perm
 
@@ -448,7 +455,7 @@ def sys_map_pml4(old, pid, index, perm):
     new = old.copy()
 
     frm = old.procs[pid].page_table_root
-
+    # set page table entry's value.
     new.pages[frm].data[index] = (
         (z3.UDiv(new.pages_ptr_to_int, util.i64(dt.PAGE_SIZE)) + frm) << dt.PTE_PFN_SHIFT) | perm
 
@@ -464,9 +471,10 @@ def sys_map_pml4(old, pid, index, perm):
 
     return cond, util.If(cond, new, old)
 
-
+# map page descriptor
 def sys_map_page_desc(old, pid, frm, index, n, perm):
     cond = z3.And(
+        # n must one page in page descriptor table.
         z3.ULT(n, dt.NPAGES_PAGE_DESC_TABLE),
 
         is_pid_valid(pid),
@@ -495,7 +503,7 @@ def sys_map_page_desc(old, pid, frm, index, n, perm):
     )
 
     new = old.copy()
-
+    # set page number and permission in pt entry of page table 'frm'
     new.pages[frm].data[index] = ((z3.UDiv(
         new.page_desc_table_ptr_to_int, util.i64(dt.PAGE_SIZE)) + n) << dt.PTE_PFN_SHIFT) | perm
 
@@ -632,33 +640,33 @@ def free_page_table_page(old, frm, index, to, from_type, to_type):
         z3.Extract(39, 0, z3.UDiv(old.pages_ptr_to_int, util.i64(
             dt.PAGE_SIZE)) + to) == z3.Extract(51, 12, old.pages[frm].data(index)),
     )
-
+    # copy current state machine
     new = old.copy()
-
+    # set the data of frm page in index equals to 0.
     new.pages[frm].data[index] = util.i64(0)
-
+    # set 'to' page's owner to null and type to FREE
     new.pages[to].owner = z3.BitVecVal(0, dt.pid_t)
     new.pages[to].type = dt.page_type.PAGE_TYPE_FREE
-
+    # current process' page numbers -1
     new.procs[old.current].nr_pages[to] -= 1
-
+    # flush tlb
     new.flush_tlb(old.current)
-
+    # if cond success return new, else return old.
     return cond, util.If(cond, new, old)
 
-
+# free pdpt page of 4 level page table
 def sys_free_pdpt(old, frm, index, to):
     return free_page_table_page(old, frm, index, to, dt.page_type.PAGE_TYPE_X86_PML4, dt.page_type.PAGE_TYPE_X86_PDPT)
 
-
+# free page directory in 4-level page table
 def sys_free_pd(old, frm, index, to):
     return free_page_table_page(old, frm, index, to, dt.page_type.PAGE_TYPE_X86_PDPT, dt.page_type.PAGE_TYPE_X86_PD)
 
-
+# free page table in 4-level page table
 def sys_free_pt(old, frm, index, to):
     return free_page_table_page(old, frm, index, to, dt.page_type.PAGE_TYPE_X86_PD, dt.page_type.PAGE_TYPE_X86_PT)
 
-
+# free a frame in 4-level page table
 def sys_free_frame(old, frm, index, to):
     return free_page_table_page(old, frm, index, to, dt.page_type.PAGE_TYPE_X86_PT, dt.page_type.PAGE_TYPE_FRAME)
 
@@ -679,12 +687,14 @@ def sys_switch(old, pid):
         old.procs[old.current].killed, dt.proc_state.PROC_ZOMBIE, dt.proc_state.PROC_RUNNABLE)
     # current's state must be PROC_RUNNING.
     new.procs[pid].state = dt.proc_state.PROC_RUNNING
+    # current process is process pid
     new.current = pid
 
     return cond, util.If(cond, new, old)
 
-
+# set running process to PROC_ZOMBIE
 def sys_kill(old, pid):
+    # good pid and state.
     cond = z3.And(
         is_pid_valid(pid),
         old.procs[pid].state != dt.proc_state.PROC_UNUSED,
@@ -692,7 +702,9 @@ def sys_kill(old, pid):
     )
 
     new = old.copy()
+    # set process pid's killed property to true
     new.procs[pid].killed = z3.BoolVal(True)
+    # set the process' state to PROC_ZOMBIE
     new.procs[pid].state = util.If(
         old.procs[pid].state != dt.proc_state.PROC_RUNNING, dt.proc_state.PROC_ZOMBIE, old.procs[pid].state)
 
@@ -701,13 +713,14 @@ def sys_kill(old, pid):
 
 switch_proc = sys_switch
 
-
+# set pid as INITPID's children process.
 def sys_reparent(old, pid):
     cond = z3.And(
+        # pid and ppid must all valid, pid's ppid process' state must be ZOMBIE
         is_pid_valid(pid),
         is_pid_valid(old.procs[pid].ppid),
         old.procs[old.procs[pid].ppid].state == dt.proc_state.PROC_ZOMBIE,
-
+        # INITP process' state equals to RUNNABLE or RUNING
         z3.Or(
             old.procs[dt.INITPID].state == dt.proc_state.PROC_RUNNABLE,
             old.procs[dt.INITPID].state == dt.proc_state.PROC_RUNNING,
@@ -715,10 +728,10 @@ def sys_reparent(old, pid):
     )
 
     new = old.copy()
-
+    # set INIT process children numbers and parent process children numbers.
     new.procs[dt.INITPID].nr_children[pid] += 1
     new.procs[old.procs[pid].ppid].nr_children[pid] -= 1
-
+    # set pid's parent to INITPID.
     new.procs[pid].ppid = dt.INITPID
 
     return cond, util.If(cond, new, old)
@@ -739,15 +752,15 @@ def sys_create(old, fd, fn, type, value, omode):
     )
 
     new = old.copy()
-
+    # set file fn's type value and omode
     new.files[fn].type = type
     new.files[fn].value = value
     new.files[fn].omode = omode
-
+    # offset is zero by default.
     new.files[fn].offset = z3.BitVecVal(0, dt.off_t)
-
+    # current process' opened file fd corresponding to fn
     new.procs[old.current].ofile[fd] = fn
-
+    # current process' opened fd + 1.
     new.procs[old.current].nr_fds[fd] += 1
 
     # bump file refcnt
@@ -755,7 +768,7 @@ def sys_create(old, fd, fn, type, value, omode):
 
     return cond, util.If(cond, new, old)
 
-
+# close current fd
 def sys_close(old, pid, fd):
     cond = z3.And(
         is_pid_valid(pid),
@@ -961,7 +974,8 @@ def sys_alloc_iommu_root(old, devid, pn):
 
     return cond, util.If(cond, new, old)
 
-# like allocate page table page.
+# like allocate page table page. allcate a iommu page table page here.
+# adopt 4-level page table too.
 def alloc_iommu_page_table_page(old, frm, index, to, perm, from_type, to_type):
     cond = z3.And(
         # to page is valid and free
@@ -978,17 +992,22 @@ def alloc_iommu_page_table_page(old, frm, index, to, perm, from_type, to_type):
         z3.ULT(index, 512),
 
         # permission bits check
+        # DMAR_PTE_R:0x1;DMAR_PTE_W:0x10
+        # perm's R and W bit must be 0 and other bit must be 1.
         perm & (dt.MAX_INT64 ^ (dt.DMAR_PTE_R | dt.DMAR_PTE_W)) == 0,
-
+        # entry is null
         old.pages[frm].data(index) == 0,
     )
 
     new = old.copy()
 
     new.pages[frm].data[index] = (new.pages_ptr_to_int + to * dt.PAGE_SIZE) | perm
+    # map to to page
     new.pages[frm].pgtable_pn[index] = to
     new.pages[frm].pgtable_perm[index] = perm
+    # there is no reverse page mapping.
 
+    # set page 'to' related info.
     new.pages[to].type = to_type
     new.pages[to].owner = old.current
     new.pages[to].data = util.i64(0)
@@ -999,22 +1018,22 @@ def alloc_iommu_page_table_page(old, frm, index, to, perm, from_type, to_type):
 
     return cond, util.If(cond, new, old)
 
-
+# allocate a iommu pdpt
 def sys_alloc_iommu_pdpt(old, frm, index, to, perm):
     return alloc_iommu_page_table_page(old, frm, index, to, perm,
                                        dt.page_type.PAGE_TYPE_IOMMU_PML4, dt.page_type.PAGE_TYPE_IOMMU_PDPT)
 
-
+# allocate a iommu page directory 
 def sys_alloc_iommu_pd(old, frm, index, to, perm):
     return alloc_iommu_page_table_page(old, frm, index, to, perm,
                                        dt.page_type.PAGE_TYPE_IOMMU_PDPT, dt.page_type.PAGE_TYPE_IOMMU_PD)
 
-
+# allocate a iommu page table
 def sys_alloc_iommu_pt(old, frm, index, to, perm):
     return alloc_iommu_page_table_page(old, frm, index, to, perm,
                                        dt.page_type.PAGE_TYPE_IOMMU_PD, dt.page_type.PAGE_TYPE_IOMMU_PT)
 
-
+# allocate a iommu frame page
 def sys_alloc_iommu_frame(old, frm, index, to, perm):
     cond = z3.And(
         # to page is valid and free
@@ -1038,9 +1057,11 @@ def sys_alloc_iommu_frame(old, frm, index, to, perm):
     new = old.copy()
 
     new.pages[frm].data[index] = (new.dmapages_ptr_to_int + to * dt.PAGE_SIZE) | perm
+    # set iommu pagetable entry point to 'to'
     new.pages[frm].pgtable_pn[index] = to
+    # set iommu pagetable entry's perm to 'perm'
     new.pages[frm].pgtable_perm[index] = perm
-
+    # set Frame type and the owner of to is current process, allocate must add 1.
     new.dmapages[to].type = dt.page_type.PAGE_TYPE_IOMMU_FRAME
     new.dmapages[to].owner = new.current
     new.procs[new.current].nr_dmapages[to] += 1
@@ -1049,7 +1070,12 @@ def sys_alloc_iommu_frame(old, frm, index, to, perm):
 
     return cond, util.If(cond, new, old)
 
-
+# params
+# @old              old state
+# @pt               the page table which 'to' going to mapping.
+# @index            index in pt
+# @to               the mapping page
+# @perm             permission
 def sys_map_iommu_frame(old, pt, index, to, perm):
     cond = z3.And(
         # to is a valid IOMMU_FRAME owned by current
@@ -1075,10 +1101,13 @@ def sys_map_iommu_frame(old, pt, index, to, perm):
     )
 
     new = old.copy()
-
+    # set the data value in the 'index' entry, 
+    # |---------------------|---------|
+    # |     dmapage number  |   perm  |
+    # |        52           |   12    |
     new.pages[pt].data[index] = (
         (z3.UDiv(new.dmapages_ptr_to_int, util.i64(dt.PAGE_SIZE)) + to) << dt.PTE_PFN_SHIFT) | perm
-
+    # set page table page numbner to 'to' and perm to 'perm' and type to IOMMU_Frame.
     new.pages[pt].pgtable_pn[index] = to
     new.pages[pt].pgtable_perm[index] = perm
     new.pages[pt].pgtable_type[index] = dt.PGTYPE_IOMMU_FRAME
@@ -1087,27 +1116,33 @@ def sys_map_iommu_frame(old, pt, index, to, perm):
 
     return cond, util.If(cond, new, old)
 
-
+# reclaim a iommu frame
 def sys_reclaim_iommu_frame(old, dmapn):
+    # we must ensure the dmapn, dmapn type, its owner, owner's state owner's device numbers are all valid 
     cond = z3.And(
         is_dmapn_valid(dmapn),
         old.dmapages[dmapn].type != dt.page_type.PAGE_TYPE_FREE,
         is_pid_valid(old.dmapages[dmapn].owner),
         old.procs[old.dmapages[dmapn].owner].state == dt.proc_state.PROC_ZOMBIE,
+        # the process who owned this dmap have no device.
         old.procs[old.dmapages[dmapn].owner].nr_devs() == z3.BitVecVal(0, dt.size_t),
     )
 
     new = old.copy()
-
+    # the process who owned this dmapn must reduce dmapage bumber one time.
     new.procs[new.dmapages[dmapn].owner].nr_dmapages[dmapn] -= 1
+    # the type of released dmapn is TYPE_FREE
     new.dmapages[dmapn].type = dt.page_type.PAGE_TYPE_FREE
+    # no process owned this process.
     new.dmapages[dmapn].owner = z3.BitVecVal(0, dt.pid_t)
 
     return cond, util.If(cond, new, old)
 
-
+#  reclaim device's page_table_root
 def sys_reclaim_iommu_root(old, devid):
+    # get the process who owned this device.
     pid = old.pci[devid].owner
+    # pid valid, the process' state must be RROC_ZOMBIE and the process' intrempas count is 0
     cond = z3.And(
         is_pid_valid(pid),
         old.procs[pid].state == dt.proc_state.PROC_ZOMBIE,
@@ -1119,29 +1154,37 @@ def sys_reclaim_iommu_root(old, devid):
     new.procs[pid].nr_devs[devid] -= 1
     # Clear the page_table_root
     new.pci[devid].page_table_root = z3.BitVecVal(-1, dt.pn_t)
+    # No process own this device.
     new.pci[devid].owner = z3.BitVecVal(0, dt.pid_t)
-
+    # must flush io tlb.
     new.flush_iotlb()
 
     return cond, util.If(cond, new, old)
 
-
+#
+# @old          old state
+# @pid          receiver process id
+# @val          the value to send
+# @pn           the page number to send
+# @size         the size of value to send
+# @fd           opened file descriptor
 def sys_send(old, pid, val, pn, size, fd):
+    # pid must valide and the process is waiting for send
     cond = z3.And(
         is_pid_valid(pid),
         old.procs[pid].state == dt.proc_state.PROC_SLEEPING,
-
+        # the send page must owned by current process.
         is_pn_valid(pn),
         old.pages[pn].owner == old.current,
-
+        # the size of send value must less than PAGE_ZISE.
         z3.ULE(size, dt.PAGE_SIZE),
-
+        # if fd valid, current process must has the opend file descriptor
         z3.Implies(is_fd_valid(fd),
                    is_fn_valid(old.procs[old.current].ofile(fd))),
     )
 
     new = old.copy()
-
+    # set pid's ipc information
     new.procs[pid].ipc_from = old.current
     new.procs[pid].ipc_val = val
     new.procs[pid].ipc_size = size
@@ -1154,12 +1197,12 @@ def sys_send(old, pid, val, pn, size, fd):
 
     ########
     new2 = new.copy()
-
+    # a condition that there is a ipc communication use file
     cond2 = z3.And(is_fd_valid(fd), is_fd_valid(new2.procs[pid].ipc_fd))
-
+    # get the file number of current process opend whose file descriptor is fd.
     fn = old.procs[old.current].ofile(fd)
     fd = old.procs[pid].ipc_fd
-
+    # receiver's ipc file == current process' fd's file.
     new2.procs[pid].ofile[fd] = fn
 
     # bump proc nr_fds
@@ -1167,10 +1210,11 @@ def sys_send(old, pid, val, pn, size, fd):
 
     # bump file refcnt
     new2.files[fn].refcnt[(pid, fd)] += 1
-
+    # if fd valid and 
     new3 = util.If(cond2, new2, new)
-
+    # set receiver's state 
     new3.procs[pid].state = dt.proc_state.PROC_RUNNING
+    # set sender's state
     new3.procs[old.current].state = dt.proc_state.PROC_RUNNABLE
     new3.current = pid
 
@@ -1178,28 +1222,31 @@ def sys_send(old, pid, val, pn, size, fd):
 
 
 send_proc = sys_send
-
-
+# pid receiver  send to current process
+# @pid          sender
+# @pn           page no
+# @fd           file descriptor
 def sys_recv(old, pid, pn, fd):
     cond = z3.And(
+        # sender's state must be PROC_RUNNABLE.
         is_pid_valid(pid),
         old.procs[pid].state == dt.proc_state.PROC_RUNNABLE,
-
+        # receiver's ipc page is pn and pn's type is PAGE_TYPE_FRAME.
         is_pn_valid(pn),
         old.pages[pn].owner == old.current,
         old.pages[pn].type == dt.page_type.PAGE_TYPE_FRAME,
-
+        # if use file communication, receiver must not owned this file.
         z3.Implies(is_fd_valid(fd),
                    z3.Not(is_fn_valid(old.procs[old.current].ofile(fd))))
     )
 
     new = old.copy()
-
+    # current process is receiver, i think the ipc_from should be pid.
     new.procs[old.current].ipc_from = z3.BitVecVal(0, dt.pid_t)
     new.procs[old.current].ipc_page = pn
     new.procs[old.current].ipc_size = z3.BitVecVal(0, dt.size_t)
     new.procs[old.current].ipc_fd = fd
-
+    # receiver's state is sleeping
     new.procs[old.current].state = dt.proc_state.PROC_SLEEPING
     new.procs[pid].state = dt.proc_state.PROC_RUNNING
     new.current = pid
@@ -1209,11 +1256,19 @@ def sys_recv(old, pid, pn, fd):
 
 recv_proc = sys_recv
 
-
+# send and receive. inpn and outpn are all belong to sender?
+# infd and outfd file are all not belong to sender.
+# @pid              receiver
+# @val              send val
+# @inpn             
+# @size             send val size
+# @infd             
+# @outpn
+# @outfd
 def send_recv(old, pid, val, inpn, size, infd, outpn, outfd):
     cond = z3.And(
         is_pid_valid(pid),
-
+        # receiver's state must be sleeping
         old.procs[pid].state == dt.proc_state.PROC_SLEEPING,
 
         # inpn is a valid pn and belongs to current
@@ -1221,7 +1276,7 @@ def send_recv(old, pid, val, inpn, size, infd, outpn, outfd):
         old.pages[inpn].owner == old.current,
 
         z3.ULE(size, dt.PAGE_SIZE),
-
+        # if infd valid, then current process must not open the file of infd
         z3.Implies(is_fd_valid(infd),
                    is_fn_valid(old.procs[old.current].ofile(infd))),
 
@@ -1229,7 +1284,7 @@ def send_recv(old, pid, val, inpn, size, infd, outpn, outfd):
         is_pn_valid(outpn),
         old.pages[outpn].owner == old.current,
         old.pages[outpn].type == dt.page_type.PAGE_TYPE_FRAME,
-
+        # if outfd valid then current process must not opend the file of outfd.
         z3.Implies(is_fd_valid(outfd),
                    z3.Not(is_fn_valid(old.procs[old.current].ofile(outfd)))),
 
@@ -1239,11 +1294,12 @@ def send_recv(old, pid, val, inpn, size, infd, outpn, outfd):
     )
 
     new = old.copy()
-
+    # sender's ipc page is outpn and ipc fd is outfd.
     new.procs[old.current].ipc_page = outpn
     new.procs[old.current].ipc_fd = outfd
-
+    # receiver's ipc_from is sender.
     new.procs[pid].ipc_from = old.current
+    # receiver's ipc_val is val
     new.procs[pid].ipc_val = val
 
     # memcpy
@@ -1251,16 +1307,16 @@ def send_recv(old, pid, val, inpn, size, infd, outpn, outfd):
         util.If(z3.And(pn0 == old.procs[pid].ipc_page, z3.ULT(idx0, size)),
                 oldfn(inpn, idx0),
                 oldfn(pn0, idx0))
-
+    # set receiver's ipc size.
     new.procs[pid].ipc_size = size
 
     new2 = new.copy()
-
+    # condition: receiver's ipc_fd valid or not, i.e., use file communication or not
     cond2 = z3.And(is_fd_valid(infd), is_fd_valid(new2.procs[pid].ipc_fd))
 
     fn = old.procs[old.current].ofile(infd)
     fd = old.procs[pid].ipc_fd
-
+    # use file communicaiton , receiver's ipc_fd is sender's file. share file
     new2.procs[pid].ofile[fd] = fn
 
     # bump proc nr_fds
@@ -1291,7 +1347,7 @@ reply_wait_proc = sys_reply_wait
 def sys_call(old, pid, val, inpn, size, outpn, outfd):
     cond, new = send_recv(old, pid, val, inpn, size,
                           z3.BitVecVal(-1, dt.fd_t), outpn, outfd)
-
+    # set ipc_from is pid
     new.procs[old.current].ipc_from = pid
     new.current = pid
 
@@ -1327,7 +1383,11 @@ def sys_reclaim_vector(old, vector):
 
     return cond, util.If(cond, new, old)
 
-
+# params
+# @old          old state
+# @Index        intrempas array index
+# @devid        deivce id
+# @vector       intre vector
 def sys_alloc_intremap(old, index, devid, vector):
     cond = z3.And(
         # valid and free index
@@ -1342,16 +1402,16 @@ def sys_alloc_intremap(old, index, devid, vector):
     )
 
     new = old.copy()
-
+    # set intremap's state, device id and vector.
     new.intremaps[index].state = dt.intremap_state.IR_ACTIVE
     new.intremaps[index].devid = devid
     new.intremaps[index].vector = vector
-
+    # add 1 to current process' intremaps
     new.procs[new.current].nr_intremaps[index] += 1
 
     return cond, util.If(cond, new, old)
 
-
+# reclaim a intremap
 def sys_reclaim_intremap(old, index):
     pid = old.pci[old.intremaps[index].devid].owner
 
@@ -1429,42 +1489,47 @@ def sys_alloc_io_bitmap(old, pn1, pn2, pn3):
 
     return cond, util.If(cond, new, old)
 
-
+# allocate a port
 def sys_alloc_port(old, port):
+    # condition: this port does not owned by any process and current process used io_bitmap.
     cond = z3.And(
         old.io[port].owner == 0,
         old.procs[old.current].use_io_bitmap,
     )
 
     new = old.copy()
-
+    # set the port to current process
     new.io[port].owner = old.current
+    # current process has another port.
     new.procs[old.current].nr_ports[port] += 1
-
+    # if port > 0x8000, the page no == io_bitmap_a, otherwise io_bitmap_b
     page = util.If(z3.ULT(port, 0x8000),
             new.procs[new.current].io_bitmap_a,
             new.procs[new.current].io_bitmap_b)
-
+    # set the prot number.
     port = z3.ZeroExt(64 - port.size(), util.If(z3.ULT(port, 0x8000), port, port - 0x8000))
 
     idx = z3.UDiv(port, 64)
     mask = 1 << (port % 64)
-
+    # set io_bitmap page's content in idx.
     new.pages[page].data[idx] = new.pages[page].data(idx) & ~mask
 
     return cond, util.If(cond, new, old)
 
-
+# reclaim a port
 def sys_reclaim_port(old, port):
     pid = old.io[port].owner
+    # the process id who owned the port must valid, and the state of this process must be ZOMBIE
+    # only ZOMBIE process can be reclaim the port.
     cond = z3.And(
         is_pid_valid(pid),
         old.procs[pid].state == dt.proc_state.PROC_ZOMBIE
     )
 
     new = old.copy()
-
+    # port numbers -1.
     new.procs[pid].nr_ports[port] -= 1
+    # any process has not owned this port.
     new.io[port].owner = z3.BitVecVal(0, dt.pid_t)
 
     return cond, util.If(cond, new, old)
